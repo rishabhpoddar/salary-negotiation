@@ -574,10 +574,10 @@ export default function App() {
       ),
     [timelineItems],
   );
+  const annualGrantOwnershipPct = (newEquityUsd / newValuationUsd) * 100;
   const newOutcomeRows = useMemo<TimelineLiquidityMetrics[]>(
     () =>
       liquidityItems.map((outcome) => {
-        const annualGrantOwnershipPct = (newEquityUsd / newValuationUsd) * 100;
         const adjustedFinalOwnershipPct = equityOwnershipAtLiquidity(
           fundingItems,
           outcome.year,
@@ -596,7 +596,6 @@ export default function App() {
       }),
     [fundingItems, liquidityItems, newEquityUsd, newInflationRatePct, newValuationUsd, vestingYears],
   );
-  const annualGrantOwnershipPct = useMemo(() => (newEquityUsd / newValuationUsd) * 100, [newEquityUsd, newValuationUsd]);
   const salaryInUsd = newSalaryUsd;
 
   return (
