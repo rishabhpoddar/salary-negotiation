@@ -5,7 +5,8 @@ A Vite + React app for modeling startup compensation and liquidity outcomes.
 It is built for situations where you want to reason about:
 
 - salary in USD
-- equity grant value
+- annual equity grant value
+- vesting period
 - current company valuation
 - future funding rounds and dilution
 - liquidity events such as IPOs, buybacks, or exits
@@ -46,7 +47,8 @@ npm run preview
 ### Offer inputs
 
 - `Salary` is annual cash salary in USD.
-- `Equity grant value` is the dollar value of the grant at the current valuation.
+- `Annual equity grant value` is the dollar value of the yearly grant at the current valuation.
+- `Vesting period` is how long each annual grant takes to vest.
 - `Company valuation` is the current valuation used to convert dollar grant value into ownership percentage.
 - `Inflation rate` is used to show real terms alongside nominal cash-out.
 
@@ -62,6 +64,12 @@ Add timeline items in order:
   - require `year from now` and `company worth`
 
 The app applies only the funding rounds that happen before each liquidity event.
+
+Equity is modeled as a yearly grant stream:
+
+- a new grant is issued every year
+- each grant vests linearly over the vesting period
+- each grant is diluted by any funding rounds that happen after it is granted
 
 ### Outputs
 

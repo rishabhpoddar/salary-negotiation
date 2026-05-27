@@ -29,6 +29,7 @@ const MODEL_STORAGE_KEY = 'salary-negotiation-model';
 const newOfferDefaults = {
   salaryUsd: 100_000,
   equityUsd: 100_000,
+  vestingYears: 4,
   valuationUsd: 300_000_000,
   inflationRatePct: 3.8,
 };
@@ -46,6 +47,7 @@ function createTimelineItemId() {
 type SavedModel = {
   salaryUsd?: number;
   equityUsd?: number;
+  vestingYears?: number;
   valuationUsd?: number;
   inflationRatePct?: number;
   timelineItems?: TimelineItem[];
@@ -61,6 +63,7 @@ function loadSavedModel(): SavedModel {
     return {
       salaryUsd: typeof parsed.salaryUsd === 'number' ? parsed.salaryUsd : undefined,
       equityUsd: typeof parsed.equityUsd === 'number' ? parsed.equityUsd : undefined,
+      vestingYears: typeof parsed.vestingYears === 'number' ? parsed.vestingYears : undefined,
       valuationUsd: typeof parsed.valuationUsd === 'number' ? parsed.valuationUsd : undefined,
       inflationRatePct: typeof parsed.inflationRatePct === 'number' ? parsed.inflationRatePct : undefined,
       timelineItems: Array.isArray(parsed.timelineItems)
@@ -89,28 +92,32 @@ function saveModel(model: SavedModel) {
   }
 }
 
-function formatUsd(value: number, digits = 0) {
+function formatUsd(value: number, digits = 3) {
   if (!Number.isFinite(value)) return '$0';
   const abs = Math.abs(value);
   const formatter = new Intl.NumberFormat('en-US', {
     maximumFractionDigits: digits,
-    minimumFractionDigits: digits,
+    minimumFractionDigits: 0,
   });
   if (abs >= 1_000_000) return `$${formatter.format(value / 1_000_000)}M`;
   if (abs >= 1_000) return `$${formatter.format(value / 1_000)}K`;
   return `$${formatter.format(value)}`;
 }
 
-function formatInr(value: number, digits = 0) {
+function formatInr(value: number, digits = 3) {
   const formatter = new Intl.NumberFormat('en-IN', {
     maximumFractionDigits: digits,
-    minimumFractionDigits: digits,
+    minimumFractionDigits: 0,
   });
   return `₹${formatter.format(value)}`;
 }
 
-function formatPct(value: number, digits = 2) {
-  return `${value.toFixed(digits)}%`;
+function formatPct(value: number, digits = 3) {
+  const formatter = new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  });
+  return `${formatter.format(value)}%`;
 }
 
 function formatCompactMoney(value: number) {
@@ -119,7 +126,7 @@ function formatCompactMoney(value: number) {
   const sign = value < 0 ? '-' : '';
 
   const format = (scaled: number, suffix: string) => {
-    const rounded = Number.isInteger(scaled) ? scaled.toFixed(0) : scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2);
+    const rounded = Number.isInteger(scaled) ? scaled.toFixed(0) : scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : scaled >= 1 ? 2 : 3);
     return `${sign}${rounded}${suffix}`;
   };
 
@@ -150,12 +157,37 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function ownershipMultiplierThroughYear(fundingRounds: TimelineItem[], liquidityYear: number) {
-  const safeYear = Math.max(0, liquidityYear);
+function fundingMultiplierBetweenYears(fundingRounds: TimelineItem[], fromYear: number, toYear: number) {
+  const safeFromYear = Math.max(0, fromYear);
+  const safeToYear = Math.max(safeFromYear, toYear);
   return fundingRounds
-    .filter((item) => item.kind === 'funding' && item.year <= safeYear)
+    .filter((item) => item.kind === 'funding' && item.year > safeFromYear && item.year <= safeToYear)
     .sort((a, b) => a.year - b.year)
     .reduce((multiplier, item) => multiplier * (1 - clamp(item.dilutionPct ?? 0, 0, 100) / 100), 1);
+}
+
+function vestedFractionAt(grantAgeYears: number, vestingYears: number) {
+  const safeVest = Math.max(0.0001, vestingYears);
+  return clamp(grantAgeYears / safeVest, 0, 1);
+}
+
+function equityOwnershipAtLiquidity(
+  fundingRounds: TimelineItem[],
+  liquidityYear: number,
+  annualGrantOwnershipPct: number,
+  vestingYears: number,
+) {
+  const safeLiquidityYear = Math.max(0, liquidityYear);
+  let totalOwnershipPct = 0;
+
+  for (let grantYear = 0; grantYear <= Math.floor(safeLiquidityYear + 1e-9); grantYear += 1) {
+    const grantAge = safeLiquidityYear - grantYear;
+    const vestedFraction = vestedFractionAt(grantAge, vestingYears);
+    const dilutionMultiplier = fundingMultiplierBetweenYears(fundingRounds, grantYear, safeLiquidityYear);
+    totalOwnershipPct += annualGrantOwnershipPct * vestedFraction * dilutionMultiplier;
+  }
+
+  return totalOwnershipPct;
 }
 
 function realTermsValue(nominalValue: number, yearsToLiquidity: number, inflationRatePct: number) {
@@ -189,7 +221,7 @@ function FxPill({ fx }: { fx: LiveFx }) {
   return (
     <div className="fx-pill">
       <span>USD/INR</span>
-      <strong>₹{fx.usdToInr.toFixed(2)}</strong>
+      <strong>₹{fx.usdToInr.toFixed(3)}</strong>
       <small>
         {fx.live ? 'Live on page load' : fx.source === 'cached' ? 'Cached from prior load' : 'Fallback value'}
         {fx.date ? ` · ${fx.date}` : ''}
@@ -326,7 +358,7 @@ function TimelineEditor({
       {
         id: createTimelineItemId(),
         kind,
-        year: Number(nextYear.toFixed(1)),
+        year: Number(nextYear.toFixed(3)),
         ...(kind === 'funding'
           ? {
             valuationUsd: lastItem?.valuationUsd ? lastItem.valuationUsd * 2 : 500_000_000,
@@ -470,6 +502,7 @@ export default function App() {
   const savedModel = useMemo(() => loadSavedModel(), []);
   const [newSalaryUsd, setNewSalaryUsd] = useState(() => savedModel.salaryUsd ?? newOfferDefaults.salaryUsd);
   const [newEquityUsd, setNewEquityUsd] = useState(() => savedModel.equityUsd ?? newOfferDefaults.equityUsd);
+  const [vestingYears, setVestingYears] = useState(() => savedModel.vestingYears ?? newOfferDefaults.vestingYears);
   const [newValuationUsd, setNewValuationUsd] = useState(() => savedModel.valuationUsd ?? newOfferDefaults.valuationUsd);
   const [newInflationRatePct, setNewInflationRatePct] = useState(
     () => savedModel.inflationRatePct ?? newOfferDefaults.inflationRatePct,
@@ -518,14 +551,13 @@ export default function App() {
     saveModel({
       salaryUsd: newSalaryUsd,
       equityUsd: newEquityUsd,
+      vestingYears,
       valuationUsd: newValuationUsd,
       inflationRatePct: newInflationRatePct,
       timelineItems,
     });
-  }, [newSalaryUsd, newEquityUsd, newValuationUsd, newInflationRatePct, timelineItems]);
+  }, [newSalaryUsd, newEquityUsd, vestingYears, newValuationUsd, newInflationRatePct, timelineItems]);
 
-  const newInitialPaperValue = newEquityUsd;
-  const newInitialOwnershipPct = useMemo(() => (newEquityUsd / newValuationUsd) * 100, [newEquityUsd, newValuationUsd]);
   const liquidityItems = useMemo(
     () =>
       timelineItems.filter(
@@ -545,8 +577,13 @@ export default function App() {
   const newOutcomeRows = useMemo<TimelineLiquidityMetrics[]>(
     () =>
       liquidityItems.map((outcome) => {
-        const ownershipMultiplier = ownershipMultiplierThroughYear(fundingItems, outcome.year);
-        const adjustedFinalOwnershipPct = newInitialOwnershipPct * ownershipMultiplier;
+        const annualGrantOwnershipPct = (newEquityUsd / newValuationUsd) * 100;
+        const adjustedFinalOwnershipPct = equityOwnershipAtLiquidity(
+          fundingItems,
+          outcome.year,
+          annualGrantOwnershipPct,
+          vestingYears,
+        );
         const nominalPayout = (outcome.companyValueUsd ?? 0) * (adjustedFinalOwnershipPct / 100);
         const realPayout = realTermsValue(nominalPayout, outcome.year, newInflationRatePct);
         return {
@@ -557,8 +594,9 @@ export default function App() {
           realPayout,
         };
       }),
-    [fundingItems, liquidityItems, newInitialOwnershipPct, newInflationRatePct],
+    [fundingItems, liquidityItems, newEquityUsd, newInflationRatePct, newValuationUsd, vestingYears],
   );
+  const annualGrantOwnershipPct = useMemo(() => (newEquityUsd / newValuationUsd) * 100, [newEquityUsd, newValuationUsd]);
   const salaryInUsd = newSalaryUsd;
 
   return (
@@ -599,16 +637,27 @@ export default function App() {
               compact
             />
             <FieldCard
-              label="Equity grant value"
+              label="Annual equity grant value"
               unit="USD at today's valuation"
               value={newEquityUsd}
               onChange={setNewEquityUsd}
-              question="What is the equity grant worth at the current valuation?"
-              hint={`This implies ${formatPct(newInitialOwnershipPct, 4)} ownership before future dilution.`}
+              question="What is the annual equity grant worth at the current valuation?"
+              hint={`This is granted every year and is about ${formatPct(annualGrantOwnershipPct, 3)} of the company at today's valuation.`}
               min={0}
               max={2_000_000}
               step={5_000}
               compact
+            />
+            <FieldCard
+              label="Vesting period"
+              unit="years"
+              value={vestingYears}
+              onChange={setVestingYears}
+              question="How many years does each grant take to vest?"
+              hint="Each yearly grant starts vesting from its grant date."
+              min={1}
+              max={5}
+              step={0.5}
             />
             <FieldCard
               label="Company valuation"
@@ -668,11 +717,11 @@ export default function App() {
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Exit year (y)</span>
-                      <strong>{row.year.toFixed(1)}y</strong>
+                      <strong>{row.year.toFixed(3)}y</strong>
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Company worth (USD)</span>
-                      <strong>{formatUsd(row.companyValueUsd ?? 0, 1)}</strong>
+                      <strong>{formatUsd(row.companyValueUsd ?? 0, 3)}</strong>
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Rounds</span>
@@ -680,15 +729,15 @@ export default function App() {
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Final ownership (%)</span>
-                      <strong>{formatPct(row.adjustedFinalOwnershipPct, 1)}</strong>
+                      <strong>{formatPct(row.adjustedFinalOwnershipPct, 3)}</strong>
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Nominal cash-out (USD)</span>
-                      <strong>{formatUsd(row.nominalPayout, 1)}</strong>
+                      <strong>{formatUsd(row.nominalPayout, 3)}</strong>
                     </div>
                     <div className="liquidity-cell">
                       <span className="liquidity-label">Real cash-out (USD)</span>
-                      <strong>{formatUsd(row.realPayout, 1)}</strong>
+                      <strong>{formatUsd(row.realPayout, 3)}</strong>
                     </div>
                   </div>
                 ))}
