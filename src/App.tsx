@@ -30,6 +30,7 @@ const newOfferDefaults = {
   salaryUsd: 100_000,
   equityUsd: 100_000,
   vestingYears: 4,
+  grantYears: 4,
   valuationUsd: 300_000_000,
   inflationRatePct: 3.8,
 };
@@ -48,6 +49,7 @@ type SavedModel = {
   salaryUsd?: number;
   equityUsd?: number;
   vestingYears?: number;
+  grantYears?: number;
   valuationUsd?: number;
   inflationRatePct?: number;
   timelineItems?: TimelineItem[];
@@ -64,6 +66,7 @@ function loadSavedModel(): SavedModel {
       salaryUsd: typeof parsed.salaryUsd === 'number' ? parsed.salaryUsd : undefined,
       equityUsd: typeof parsed.equityUsd === 'number' ? parsed.equityUsd : undefined,
       vestingYears: typeof parsed.vestingYears === 'number' ? parsed.vestingYears : undefined,
+      grantYears: typeof parsed.grantYears === 'number' ? parsed.grantYears : undefined,
       valuationUsd: typeof parsed.valuationUsd === 'number' ? parsed.valuationUsd : undefined,
       inflationRatePct: typeof parsed.inflationRatePct === 'number' ? parsed.inflationRatePct : undefined,
       timelineItems: Array.isArray(parsed.timelineItems)
@@ -176,11 +179,15 @@ function equityOwnershipAtLiquidity(
   liquidityYear: number,
   annualGrantOwnershipPct: number,
   vestingYears: number,
+  grantYears: number,
 ) {
   const safeLiquidityYear = Math.max(0, liquidityYear);
+  // Grants are only issued for the first `grantYears` years, so the last grant
+  // is at year (grantYears - 1). Never grant beyond the liquidity year either.
+  const lastGrantYear = Math.min(Math.floor(safeLiquidityYear + 1e-9), Math.max(0, Math.ceil(grantYears)) - 1);
   let totalOwnershipPct = 0;
 
-  for (let grantYear = 0; grantYear <= Math.floor(safeLiquidityYear + 1e-9); grantYear += 1) {
+  for (let grantYear = 0; grantYear <= lastGrantYear; grantYear += 1) {
     const grantAge = safeLiquidityYear - grantYear;
     const vestedFraction = vestedFractionAt(grantAge, vestingYears);
     const dilutionMultiplier = fundingMultiplierBetweenYears(fundingRounds, grantYear, safeLiquidityYear);
@@ -503,6 +510,7 @@ export default function App() {
   const [newSalaryUsd, setNewSalaryUsd] = useState(() => savedModel.salaryUsd ?? newOfferDefaults.salaryUsd);
   const [newEquityUsd, setNewEquityUsd] = useState(() => savedModel.equityUsd ?? newOfferDefaults.equityUsd);
   const [vestingYears, setVestingYears] = useState(() => savedModel.vestingYears ?? newOfferDefaults.vestingYears);
+  const [grantYears, setGrantYears] = useState(() => savedModel.grantYears ?? newOfferDefaults.grantYears);
   const [newValuationUsd, setNewValuationUsd] = useState(() => savedModel.valuationUsd ?? newOfferDefaults.valuationUsd);
   const [newInflationRatePct, setNewInflationRatePct] = useState(
     () => savedModel.inflationRatePct ?? newOfferDefaults.inflationRatePct,
@@ -552,11 +560,12 @@ export default function App() {
       salaryUsd: newSalaryUsd,
       equityUsd: newEquityUsd,
       vestingYears,
+      grantYears,
       valuationUsd: newValuationUsd,
       inflationRatePct: newInflationRatePct,
       timelineItems,
     });
-  }, [newSalaryUsd, newEquityUsd, vestingYears, newValuationUsd, newInflationRatePct, timelineItems]);
+  }, [newSalaryUsd, newEquityUsd, vestingYears, grantYears, newValuationUsd, newInflationRatePct, timelineItems]);
 
   const liquidityItems = useMemo(
     () =>
@@ -583,6 +592,7 @@ export default function App() {
           outcome.year,
           annualGrantOwnershipPct,
           vestingYears,
+          grantYears,
         );
         const nominalPayout = (outcome.companyValueUsd ?? 0) * (adjustedFinalOwnershipPct / 100);
         const realPayout = realTermsValue(nominalPayout, outcome.year, newInflationRatePct);
@@ -594,7 +604,7 @@ export default function App() {
           realPayout,
         };
       }),
-    [fundingItems, liquidityItems, newEquityUsd, newInflationRatePct, newValuationUsd, vestingYears],
+    [fundingItems, liquidityItems, newEquityUsd, newInflationRatePct, newValuationUsd, vestingYears, grantYears],
   );
   const salaryInUsd = newSalaryUsd;
 
@@ -646,6 +656,17 @@ export default function App() {
               max={2_000_000}
               step={5_000}
               compact
+            />
+            <FieldCard
+              label="Grant duration"
+              unit="years"
+              value={grantYears}
+              onChange={setGrantYears}
+              question="For how many years is the annual equity grant issued?"
+              hint="After this many years, no new grants are added (previously granted equity keeps vesting)."
+              min={1}
+              max={15}
+              step={1}
             />
             <FieldCard
               label="Vesting period"
